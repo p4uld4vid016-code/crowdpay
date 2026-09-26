@@ -19,10 +19,14 @@ const {
   getCampaignBalance,
   ensureCustodialAccountFundedAndTrusted,
   getSupportedAssetCodes,
+  buildUnsignedSubscriptionTransaction,
+  submitPreparedSubscriptionTransaction,
 } = require('./stellarService');
 const { withDecryptedWalletSecret } = require('./walletSecrets');
 const { buildContributionMemo } = require('./contributionService');
 const { createNotification } = require('./notifications');
+const { Keypair, TransactionBuilder } = require('@stellar/stellar-sdk');
+const { networkPassphrase } = require('../config/stellar');
 
 const PERIOD_DAYS = 30;
 const ALLOWED_PERIOD_MONTHS = [1, 3, 6];
@@ -112,6 +116,199 @@ function validateSubscriptionInput({ amountPerPeriod, asset, periodMonths, total
     );
   }
   return { amount: toAmount(amount), periodMonths: Number(periodMonths), totalPeriods: periods };
+}
+
+/**
+ * Prepare a subscription for Freighter wallets.
+ * Returns unsigned XDR bound to the contributor, campaign, asset, amount, and schedule.
+ */
+async function prepareSubscription({
+  campaignId,
+  userId,
+  amountPerPeriod,
+  asset,
+  periodMonths,
+  totalPeriods,
+}) {
+  const input = validateSubscriptionInput({ amountPerPeriod, asset, periodMonths, totalPeriods });
+
+  const { rows: campaignRows } = await db.query(
+    `SELECT id, wallet_public_key, asset_type, deadline FROM campaigns
+     WHERE id = $1 AND status = 'active' AND deleted_at IS NULL`,
+    [campaignId]
+  );
+  const campaign = campaignRows[0];
+  if (!campaign) throw httpError('Campaign not found', 404);
+
+  if (asset !== campaign.asset_type) {
+    throw httpError(
+      `This campaign only accepts ${campaign.asset_type} pledges`,
+      400,
+      'INVALID_SUBSCRIPTION'
+    );
+  }
+
+  const { rows: userRows } = await db.query(
+    'SELECT id, wallet_public_key, wallet_type FROM users WHERE id = $1',
+    [userId]
+  );
+  const contributor = userRows[0];
+  if (!contributor) throw httpError('User not found', 404);
+  if (contributor.wallet_type !== 'freighter') {
+    throw httpError('Prepare endpoint is only available for Freighter wallets', 400, 'UNSUPPORTED_WALLET_TYPE');
+  }
+
+  const startedAt = new Date();
+  const schedule = [];
+  for (let period = 1; period <= input.totalPeriods; period += 1) {
+    const scheduledDate = scheduleDateForPeriod(startedAt, period, input.periodMonths);
+    schedule.push({
+      scheduledDate,
+      amount: input.amount,
+      reclaimAfterUnix: Math.floor(
+        (scheduledDate.getTime() + CONTRIBUTOR_RECLAIM_AFTER_DAYS * DAY_MS) / 1000
+      ),
+    });
+  }
+
+  const { unsignedXdr, balanceEntries } = await buildUnsignedSubscriptionTransaction({
+    sourcePublicKey: contributor.wallet_public_key,
+    asset,
+    entries: schedule.map((entry) => ({
+      amount: entry.amount,
+      reclaimAfterUnix: entry.reclaimAfterUnix,
+    })),
+  });
+
+  return {
+    unsignedXdr,
+    campaignId,
+    userId,
+    walletPublicKey: contributor.wallet_public_key,
+    asset,
+    amountPerPeriod: input.amount,
+    periodMonths,
+    totalPeriods: input.totalPeriods,
+    schedule: schedule.map((s) => ({
+      scheduledDate: s.scheduledDate.toISOString(),
+      amount: s.amount,
+    })),
+    totalCommitment: toAmount(input.amount * input.totalPeriods),
+  };
+}
+
+/**
+ * Submit a signed subscription transaction from a Freighter wallet.
+ * Persists balance IDs only after the signed transaction is confirmed on Horizon.
+ */
+async function submitSubscription({ campaignId, userId, unsignedXdr, signedXdr, asset, amountPerPeriod, periodMonths, totalPeriods }) {
+  const input = validateSubscriptionInput({ amountPerPeriod: amountPerPeriod, asset, periodMonths, totalPeriods });
+
+  const { rows: campaignRows } = await db.query(
+    `SELECT id, wallet_public_key, asset_type, deadline FROM campaigns
+     WHERE id = $1 AND status = 'active' AND deleted_at IS NULL`,
+    [campaignId]
+  );
+  const campaign = campaignRows[0];
+  if (!campaign) throw httpError('Campaign not found', 404);
+
+  if (asset !== campaign.asset_type) {
+    throw httpError(
+      `This campaign only accepts ${campaign.asset_type} pledges`,
+      400,
+      'INVALID_SUBSCRIPTION'
+    );
+  }
+
+  const { rows: userRows } = await db.query(
+    'SELECT id, wallet_public_key, wallet_type FROM users WHERE id = $1',
+    [userId]
+  );
+  const contributor = userRows[0];
+  if (!contributor) throw httpError('User not found', 404);
+  if (contributor.wallet_type !== 'freighter') {
+    throw httpError('Submit endpoint is only available for Freighter wallets', 400, 'UNSUPPORTED_WALLET_TYPE');
+  }
+
+  const tx = TransactionBuilder.fromXDR(unsignedXdr, networkPassphrase);
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
+
+  if (signedTx.hash().toString('hex') !== tx.hash().toString('hex')) {
+    throw httpError('Signed transaction does not match the prepared transaction', 400, 'XDR_MISMATCH');
+  }
+
+  const startedAt = new Date();
+  const schedule = [];
+  for (let period = 1; period <= input.totalPeriods; period += 1) {
+    const scheduledDate = scheduleDateForPeriod(startedAt, period, input.periodMonths);
+    schedule.push({
+      scheduledDate,
+      amount: input.amount,
+      reclaimAfterUnix: Math.floor(
+        (scheduledDate.getTime() + CONTRIBUTOR_RECLAIM_AFTER_DAYS * DAY_MS) / 1000
+      ),
+    });
+  }
+
+  const { txHash, balanceIds } = await submitPreparedSubscriptionTransaction({
+    signedXdr,
+    sourcePublicKey: contributor.wallet_public_key,
+    asset,
+    entries: schedule.map((entry) => ({
+      amount: entry.amount,
+      reclaimAfterUnix: entry.reclaimAfterUnix,
+    })),
+  });
+
+  const client = await db.connect();
+  let subscriptionId;
+  try {
+    await client.query('BEGIN');
+    const { rows: inserted } = await client.query(
+      `INSERT INTO subscriptions
+        (campaign_id, contributor_user_id, amount_per_period, asset, period_months, total_periods)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id`,
+      [campaignId, userId, input.amount, asset, input.periodMonths, input.totalPeriods]
+    );
+    subscriptionId = inserted[0].id;
+
+    for (let i = 0; i < schedule.length; i += 1) {
+      await client.query(
+        `INSERT INTO subscription_balances
+          (subscription_id, stellar_balance_id, scheduled_date, amount)
+        VALUES ($1, $2, $3, $4)`,
+        [subscriptionId, balanceIds[i], schedule[i].scheduledDate.toISOString(), schedule[i].amount]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('subscriptions: failed to persist Freighter schedule after signing', {
+      campaign_id: campaignId,
+      user_id: userId,
+      balance_ids: balanceIds,
+      error: err.message,
+    });
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  logger.info('subscriptions: created via Freighter', {
+    subscription_id: subscriptionId,
+    campaign_id: campaignId,
+    periods: input.totalPeriods,
+  });
+
+  return {
+    subscriptionId,
+    balanceIds,
+    totalCommitment: toAmount(input.amount * input.totalPeriods),
+    totalPeriods: input.totalPeriods,
+    firstPaymentDate: schedule[0].scheduledDate.toISOString(),
+    lastPaymentDate: schedule[schedule.length - 1].scheduledDate.toISOString(),
+  };
 }
 
 /**
@@ -734,6 +931,8 @@ module.exports = {
   periodsWithinFundingWindow,
   startSubscriptionClaimWorker,
   stopSubscriptionClaimWorker,
+  prepareSubscription,
+  submitSubscription,
   ALLOWED_PERIOD_MONTHS,
   MIN_PERIODS,
   MAX_PERIODS,

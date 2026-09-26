@@ -1752,6 +1752,7 @@ export default function Campaign() {
           <RecurringPledgeForm
             campaignId={id}
             asset={campaign.asset_type}
+            walletType={user.wallet_type}
             onSubscribed={() => setContributed((prev) => !prev)}
           />
         )}

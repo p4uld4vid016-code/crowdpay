@@ -17,6 +17,7 @@ const {
 } = require('../services/webhookService');
 const asyncHandler = require('../utils/asyncHandler');
 const { isSafeUrl } = require('../utils/ssrfGuard');
+const { logCredentialEvent } = require('../services/auditService');
 
 const isTest = process.env.NODE_ENV === 'test';
 
@@ -144,6 +145,15 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     [req.user.userId, url, ev, secret, backoff_strategy ? JSON.stringify(backoff_strategy) : null]
   );
 
+  await logCredentialEvent({
+    actorId: req.user.userId,
+    action: 'webhook_create',
+    resourceType: 'webhook',
+    resourceId: rows[0].id,
+    req,
+    metadata: { url, events: ev },
+  });
+
   res.status(201).json({
     ...rows[0],
     secret,
@@ -171,12 +181,22 @@ router.patch('/:id/backoff-strategy', requireAuth, asyncHandler(async (req, res)
 
 router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
-    `UPDATE webhooks SET revoked_at = NOW()
-     WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
-     RETURNING id`,
+    `SELECT id, url FROM webhooks WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
     [req.params.id, req.user.userId]
   );
   if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
+  await db.query(
+    `UPDATE webhooks SET revoked_at = NOW() WHERE id = $1`,
+    [req.params.id]
+  );
+  await logCredentialEvent({
+    actorId: req.user.userId,
+    action: 'webhook_revoke',
+    resourceType: 'webhook',
+    resourceId: rows[0].id,
+    req,
+    metadata: { url: rows[0].url },
+  });
   res.json({ revoked: true, id: rows[0].id });
 }));
 

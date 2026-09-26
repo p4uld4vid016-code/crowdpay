@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../services/api';
+import { getNetwork, signTransaction } from '@stellar/freighter-api';
 
 const PERIOD_OPTIONS = [
   { months: 1, label: 'Monthly' },
@@ -76,7 +77,7 @@ function ConfirmLockModal({ amountPerPeriod, asset, periodMonths, totalPeriods, 
   );
 }
 
-export default function RecurringPledgeForm({ campaignId, asset, onSubscribed }) {
+export default function RecurringPledgeForm({ campaignId, asset, walletType, onSubscribed }) {
   const [open, setOpen] = useState(false);
   const [amountPerPeriod, setAmountPerPeriod] = useState('');
   const [periodMonths, setPeriodMonths] = useState(1);
@@ -85,31 +86,71 @@ export default function RecurringPledgeForm({ campaignId, asset, onSubscribed })
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [created, setCreated] = useState(null);
+  const [signing, setSigning] = useState(false);
 
   const amount = parseFloat(amountPerPeriod);
   const amountValid = Number.isFinite(amount) && amount > 0;
   const totalCommitment = amountValid ? Number((amount * totalPeriods).toFixed(7)) : 0;
 
+  const isFreighter = walletType === 'freighter';
+
   async function confirmPledge() {
     setSubmitting(true);
     setError('');
     try {
-      const subscription = await api.createSubscription(campaignId, {
-        amountPerPeriod: amount,
-        asset,
-        periodMonths,
-        totalPeriods,
-      });
-      setCreated(subscription);
-      setShowConfirm(false);
-      setOpen(false);
-      setAmountPerPeriod('');
-      onSubscribed?.(subscription);
+      if (isFreighter) {
+        await confirmPledgeFreighter();
+      } else {
+        const subscription = await api.createSubscription(campaignId, {
+          amountPerPeriod: amount,
+          asset,
+          periodMonths,
+          totalPeriods,
+        });
+        setCreated(subscription);
+        setShowConfirm(false);
+        setOpen(false);
+        setAmountPerPeriod('');
+        onSubscribed?.(subscription);
+      }
     } catch (err) {
       setError(err.message || 'Could not start this recurring pledge');
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function confirmPledgeFreighter() {
+    const prepared = await api.prepareSubscription(campaignId, {
+      amountPerPeriod: amount,
+      asset,
+      periodMonths,
+      totalPeriods,
+    });
+
+    const network = await getNetwork();
+    if (network?.error) throw new Error('Could not read Freighter network');
+
+    const signed = await signTransaction(prepared.unsignedXdr, {
+      networkPassphrase: network?.networkPassphrase,
+      address: prepared.walletPublicKey,
+    });
+    if (signed?.error) throw new Error(signed.error?.message || 'Freighter signing failed');
+    if (!signed?.signedTxXdr) throw new Error('Freighter did not return a signed transaction');
+
+    const subscription = await api.submitSubscription(campaignId, {
+      unsignedXdr: prepared.unsignedXdr,
+      signedXdr: signed.signedTxXdr,
+      amountPerPeriod: amount,
+      asset,
+      periodMonths,
+      totalPeriods,
+    });
+    setCreated(subscription);
+    setShowConfirm(false);
+    setOpen(false);
+    setAmountPerPeriod('');
+    onSubscribed?.(subscription);
   }
 
   return (

@@ -174,14 +174,8 @@ async function submitCustodialContribution({
   // Contract-mode deposits move the full amount into escrow (the contract
   // applies its own fee policy); classic payments split the fee off here.
   const feeSplit = contractMode ? null : await calcFee(destinationAmount);
-  const platformFeeAmount = feeSplit ? feeSplit.feeAmount : fromStroops(0n);
+  const platformFeeAmountClassic = feeSplit ? feeSplit.feeAmount : fromStroops(0n);
 
-  const metadata = {
-    ...intent.flowMetadata,
-    amount_stroops: amountStroops.toString(),
-    platform_fee_amount: platformFeeAmount,
-    platform_fee_stroops: feeSplit ? feeSplit.feeStroops.toString() : '0',
-    campaign_net_amount: feeSplit ? feeSplit.campaignAmount : destinationAmount,
   const metadata = {
     ...intent.flowMetadata,
     platform_fee_amount: 0,
@@ -228,8 +222,8 @@ async function submitCustodialContribution({
       conversionQuote: intent.conversionQuote,
       flowMetadata: metadata,
       contractMode,
-      platformFeeAmount,
-      platform_fee_amount: platformFeeAmount,
+      platformFeeAmount: platformFeeAmountClassic,
+      platform_fee_amount: platformFeeAmountClassic,
       destinationAmount,
       destinationAsset: campaign.asset_type,
       replayed: true,
@@ -355,6 +349,7 @@ async function submitCustodialContribution({
         } catch (retryErr) {
           retryErr.statusCode = retryErr.statusCode || 502;
           throw retryErr;
+        }
         // Slippage safety net (#688): if the strict-receive sendMax was too tight
         // (DEX rate moved since the quote), re-quote once and retry before
         // surfacing the failure to the contributor.

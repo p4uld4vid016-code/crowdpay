@@ -116,10 +116,6 @@ export const api = {
     const res = await apiClient.patch(`/admin/campaigns/${id}/suspend`, data);
     return res.data;
   },
-  async getContributions(campaignId, params) {
-    const res = await apiClient.get(`/campaigns/${campaignId}/backers`, { params });
-    return res.data;
-  },
   async getCampaignRequirements(campaignId) {
     const res = await apiClient.get(`/campaigns/${campaignId}/requirements`);
     return res.data;
@@ -142,10 +138,6 @@ export const api = {
   },
   async submitMilestoneEvidence(id, formData) {
     const res = await apiClient.post(`/milestones/${id}/upload-evidence`, formData);
-    return res.data;
-  },
-  async getMilestones(campaignId) {
-    const res = await apiClient.get(`/milestones/campaign/${campaignId}`);
     return res.data;
   },
   async getPlatformConfig() {
@@ -391,10 +383,6 @@ export const api = {
     const res = await apiClient.post('/contributions/submit-signed', payload);
     return res.data;
   },
-  async getContributions(campaignId, params) {
-    const res = await apiClient.get(`/contributions/campaign/${campaignId}`, { params });
-    return res.data;
-  },
   async getContributionDiagnosis(contributionId) {
     const res = await apiClient.get(`/contributions/${contributionId}/diagnosis`);
     return res.data;
@@ -413,6 +401,32 @@ export const api = {
   },
   async getContributionFinalization(txHash) {
     const res = await apiClient.get(`/contributions/finalization/${txHash}`);
+    return res.data;
+  },
+
+  // --- Subscriptions (Freighter support #821) ---
+  async prepareSubscription(campaignId, { amountPerPeriod, asset, periodMonths, totalPeriods }) {
+    const res = await apiClient.post(`/campaigns/${campaignId}/subscriptions/prepare`, {
+      amountPerPeriod, asset, periodMonths, totalPeriods,
+    });
+    return res.data;
+  },
+  async submitSubscription(campaignId, { unsignedXdr, signedXdr, amountPerPeriod, asset, periodMonths, totalPeriods }) {
+    const res = await apiClient.post(`/campaigns/${campaignId}/subscriptions/submit`, {
+      unsignedXdr, signedXdr, amountPerPeriod, asset, periodMonths, totalPeriods,
+    });
+    return res.data;
+  },
+
+  // --- Credential activity (#833) ---
+  async getCredentialActivity() {
+    const res = await apiClient.get('/users/me/credentials/activity');
+    return res.data.activity;
+  },
+
+  // --- API key rotation (#823) ---
+  async rotateApiKey(id, { label, scopes, expires_at }) {
+    const res = await apiClient.post(`/users/api-keys/${id}/rotate`, { label, scopes, expires_at });
     return res.data;
   },
 

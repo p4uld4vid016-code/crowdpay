@@ -22,6 +22,7 @@ export default function Developer() {
   const [keys, setKeys] = useState([]);
   const [hooks, setHooks] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
+  const [credentialsActivity, setCredentialsActivity] = useState([]);
   const [error, setError] = useState('');
   const [newKeyLabel, setNewKeyLabel] = useState('Integration');
   const [newKeyScopes, setNewKeyScopes] = useState(['read', 'write', 'withdrawals']);
@@ -43,14 +44,16 @@ export default function Developer() {
   async function refresh() {
     setError('');
     try {
-      const [k, h, d] = await Promise.all([
+      const [k, h, d, a] = await Promise.all([
         api.listApiKeys(),
         api.listWebhooks(),
         api.listWebhookDeliveries({ limit: 80 }),
+        api.getCredentialActivity(),
       ]);
       setKeys(k);
       setHooks(h);
       setDeliveries(d);
+      setCredentialsActivity(a);
     } catch (e) {
       setError(e.message || 'Failed to load');
     } finally {
@@ -710,6 +713,41 @@ export default function Developer() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section>
+        <h2 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '0.75rem' }}>
+          Credential activity log
+        </h2>
+        <p style={{ color: 'var(--color-text-hint)', marginBottom: '1rem', fontSize: '0.85rem' }}>
+          Append-only record of your API key and webhook credential events. Secret material is redacted.
+        </p>
+        {credentialsActivity.length === 0 ? (
+          <p style={{ color: 'var(--color-text-hint)' }}>No credential activity recorded yet.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead>
+                <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--color-border-light)' }}>
+                  <th style={{ padding: '0.35rem' }}>Action</th>
+                  <th>Resource</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {credentialsActivity.map((event) => (
+                  <tr key={event.id} style={{ borderBottom: '1px solid var(--color-border-lightest)' }}>
+                    <td style={{ padding: '0.35rem' }}>{event.action}</td>
+                    <td style={{ padding: '0.35rem' }}>{event.resourceType}</td>
+                    <td style={{ padding: '0.35rem' }}>
+                      {new Date(event.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </main>
   );

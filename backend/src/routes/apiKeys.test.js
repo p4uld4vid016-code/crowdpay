@@ -35,7 +35,14 @@ function buildApp({ apiKeyService = {}, authed = true } = {}) {
         calls.revokeArgs = [userId, id];
         return { id: 'k2' };
       },
+      rotateApiKey: async (userId, keyId, body) => {
+        calls.rotateArgs = [userId, keyId, body];
+        return { id: 'k3', api_key: 'live_sk_new', predecessor_id: keyId };
+      },
       ...apiKeyService,
+    },
+    '../services/auditService': {
+      logCredentialEvent: async () => {},
     },
   });
 

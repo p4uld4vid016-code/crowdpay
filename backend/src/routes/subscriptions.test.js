@@ -19,6 +19,8 @@ function buildApp(recurringStub) {
       createSubscription: async () => ({}),
       cancelSubscription: async () => ({}),
       listSubscriptionsForUser: async () => [],
+      prepareSubscription: async () => ({ unsignedXdr: 'test' }),
+      submitSubscription: async () => ({ subscriptionId: 'new' }),
       ...recurringStub,
     },
   });
@@ -162,4 +164,29 @@ test('POST /campaigns/:id/subscriptions surfaces SUBSCRIPTION_EXCEEDS_DEADLINE a
 
   assert.equal(res.status, 400);
   assert.equal(res.body.code, 'SUBSCRIPTION_EXCEEDS_DEADLINE');
+});
+
+test('POST /campaigns/:id/subscriptions/prepare returns unsigned XDR', async () => {
+  const app = buildApp({
+    prepareSubscription: async () => ({ unsignedXdr: 'test_unsigned' }),
+  });
+
+  const res = await request(app)
+    .post(`/api/campaigns/${CAMPAIGN_ID}/subscriptions/prepare`)
+    .send({ amountPerPeriod: 10, asset: 'XLM', periodMonths: 1, totalPeriods: 6 });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.unsignedXdr, 'test_unsigned');
+});
+
+test('POST /api/campaigns/:id/subscriptions/submit returns subscription', async () => {
+  const app = buildApp({
+    submitSubscription: async () => ({ subscriptionId: 'new-sub' }),
+  });
+
+  const res = await request(app)
+    .post(`/api/campaigns/${CAMPAIGN_ID}/subscriptions/submit`)
+    .send({ unsignedXdr: 'test', signedXdr: 'signed' });
+
+  assert.equal(res.status, 201);
 });

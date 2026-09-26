@@ -120,7 +120,6 @@ router.post(
 
     const client = await db.connect();
     let result;
-    let previewPath = null;
     try {
       await client.query('BEGIN');
 
@@ -159,9 +158,7 @@ router.post(
         referralLinkCode: referralLink?.code,
         referralLinkId: referralLink?.id,
         tierId: tier_id,
-        previewPath,
         idempotencyKey: idempotency_key,
-        previewPath,
         client,
       });
 

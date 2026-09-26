@@ -1,4 +1,4 @@
-﻿-- Refund workflow enhancements
+-- Refund workflow enhancements
 ALTER TABLE creator_refunds
   ADD COLUMN IF NOT EXISTS admin_note TEXT,
   ADD COLUMN IF NOT EXISTS is_force_refund BOOLEAN NOT NULL DEFAULT FALSE,

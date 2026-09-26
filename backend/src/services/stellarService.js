@@ -1074,6 +1074,53 @@ function parseCreatedClaimableBalanceIds(resultXdrBase64) {
 }
 
 /**
+ * Build an unsigned transaction for creating subscription claimable balances.
+ * Returns unsigned XDR without signing or submitting.
+ */
+async function buildUnsignedSubscriptionTransaction({ sourcePublicKey, asset, entries }) {
+  const stellarAsset = toStellarAsset(asset);
+  const fakeKeypair = Keypair.fromPublicKey(sourcePublicKey);
+  const sourceAccount = await server.loadAccount(sourcePublicKey);
+  const builder = new TransactionBuilder(sourceAccount, { fee: '100', networkPassphrase });
+
+  for (const entry of entries) {
+    builder.addOperation(
+      Operation.createClaimableBalance({
+        asset: stellarAsset,
+        amount: String(entry.amount),
+        claimants: [
+          new Claimant(getPlatformKeypair().publicKey(), Claimant.predicateUnconditional()),
+          new Claimant(
+            fakeKeypair.publicKey(),
+            Claimant.predicateNot(
+              Claimant.predicateBeforeAbsoluteTime(String(entry.reclaimAfterUnix))
+            )
+          ),
+        ],
+      })
+    );
+  }
+
+  const tx = builder.setTimeout(30).build();
+  return { unsignedXdr: tx.toXDR(), balanceEntries: entries };
+}
+
+/**
+ * Submit a pre-signed subscription transaction and extract balance IDs.
+ */
+async function submitPreparedSubscriptionTransaction({ signedXdr, sourcePublicKey, asset, entries }) {
+  const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
+  const result = await server.submitTransaction(tx);
+  const balanceIds = parseCreatedClaimableBalanceIds(result.result_xdr);
+  if (balanceIds.length !== entries.length) {
+    throw new Error(
+      `Expected ${entries.length} claimable balances, ledger reported ${balanceIds.length}`
+    );
+  }
+  return { txHash: result.hash, balanceIds };
+}
+
+/**
  * Lock one claimable balance per subscription period, all in a single transaction.
  *
  * Every balance names the platform as an unconditional claimant so the claim worker can
@@ -1412,6 +1459,8 @@ module.exports = {
   getClaimableBalance,
   isClaimableBalanceGoneError,
   parseCreatedClaimableBalanceIds,
+  buildUnsignedSubscriptionTransaction,
+  submitPreparedSubscriptionTransaction,
 
   accountExistsOnLedger,
   getCampaignBalance,

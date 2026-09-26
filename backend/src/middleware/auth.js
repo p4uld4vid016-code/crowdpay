@@ -49,31 +49,41 @@ async function authenticate(req) {
     return;
   }
 
-  if (token.startsWith('cp_live_')) {
-    const keyHash = hashApiKey(token);
-    const { rows } = await db.query(
-      `SELECT id, user_id, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL`,
-      [keyHash],
-    );
-    if (!rows.length) throw new Error('Invalid API key');
-    await db.query(`UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, [rows[0].id]);
-    const { rows: userRows } = await db.query(
-      'SELECT id, role, is_admin FROM users WHERE id = $1',
-      [rows[0].user_id],
-    );
-    const user = userRows[0] || {};
-    req.user = {
-      userId: rows[0].user_id,
-      role: user.is_admin ? 'admin' : user.role || 'contributor',
-      is_admin: user.is_admin,
-    };
-    req.auth = {
-      kind: 'api_key',
-      apiKeyId: rows[0].id,
-      scopes: rows[0].scopes || [],
-    };
-    return;
-  }
+    if (token.startsWith('cp_live_')) {
+     const keyHash = hashApiKey(token);
+     const { rows } = await db.query(
+       `SELECT id, user_id, scopes, expires_at, rotation_state FROM api_keys WHERE key_hash = $1`,
+       [keyHash],
+     );
+     if (!rows.length) throw new Error('Invalid API key');
+     const key = rows[0];
+     if (key.rotation_state === 'revoked' || key.rotation_state === 'expired') {
+       throw new Error('Invalid API key');
+     }
+     if (key.expires_at && new Date(key.expires_at) < new Date()) {
+       const err = new Error('API key expired');
+       err.statusCode = 401;
+       err.code = 'API_KEY_EXPIRED';
+       throw err;
+     }
+     await db.query(`UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, [rows[0].id]);
+     const { rows: userRows } = await db.query(
+       'SELECT id, role, is_admin FROM users WHERE id = $1',
+       [rows[0].user_id],
+     );
+     const user = userRows[0] || {};
+     req.user = {
+       userId: rows[0].user_id,
+       role: user.is_admin ? 'admin' : user.role || 'contributor',
+       is_admin: user.is_admin,
+     };
+     req.auth = {
+       kind: 'api_key',
+       apiKeyId: rows[0].id,
+       scopes: rows[0].scopes || [],
+     };
+     return;
+   }
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
@@ -328,7 +338,9 @@ function requireAuth(req, res, next) {
     })
     .catch((err) => {
       const msg = err.message === 'Missing token' ? err.message : 'Unauthorized';
-      res.status(401).json({ error: msg });
+      const errBody = { error: msg };
+      if (err.code) errBody.code = err.code;
+      res.status(err.statusCode || 401).json(errBody);
     });
 }
 

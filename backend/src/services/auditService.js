@@ -86,6 +86,43 @@ async function logAuditEvent({
   return rows[0];
 }
 
+const CREDENTIAL_RESOURCE_TYPES = new Set([
+  'api_key',
+  'webhook',
+]);
+
+/**
+ * Record an append-only credential audit event.
+ * Redacts raw keys, webhook secrets, ciphertext, and decrypted values from metadata.
+ */
+async function logCredentialEvent({ actorId, action, resourceType, resourceId, metadata = {}, req = null }) {
+  const sanitizedMetadata = sanitizeMetadata(metadata);
+  return logAuditEvent({ actorId, action, resourceType, resourceId, metadata: sanitizedMetadata, req });
+}
+
+/**
+ * Get credential-only activity feed for a user.
+ * Returns only events for api_key and webhook resource types.
+ */
+async function getCredentialActivity(userId, { limit = 50, offset = 0 } = {}) {
+  const { rows } = await db.query(
+    `SELECT a.id, a.action, a.resource_type, a.resource_id, a.metadata, a.created_at
+     FROM audit_logs a
+     WHERE a.actor_id = $1 AND a.resource_type = ANY($2)
+     ORDER BY a.created_at DESC
+     LIMIT $3 OFFSET $4`,
+    [userId, ['api_key', 'webhook'], limit, offset]
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    action: row.action,
+    resourceType: row.resource_type,
+    resourceId: row.resource_id,
+    metadata: row.metadata,
+    createdAt: row.created_at,
+  }));
+}
+
 /**
  * Build the WHERE clause and bind params for audit log filtering.
  */
@@ -236,6 +273,7 @@ async function queryAllForExport(filters) {
 
 module.exports = {
   logAuditEvent,
+  logCredentialEvent,
   queryAuditLogs,
   queryAllForExport,
   queryAuditLogsForExport: queryAllForExport,
@@ -243,4 +281,5 @@ module.exports = {
   buildExportCsv,
   EXPORT_COLUMNS,
   MAX_AUDIT_LIMIT,
+  getCredentialActivity,
 };
